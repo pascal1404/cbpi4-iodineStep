@@ -41,10 +41,11 @@ class IodineStep(CBPiStep):
             self.cbpi.notify(self.name, 'Timer must be running to add time', NotificationType.WARNING)
 
     async def start_timer(self):
-        self.cbpi.notify('No', 'Iodine check not successfull!', NotificationType.INFO)
+        self.cbpi.notify('No', "Iodine check not successfull! Starting additional {} minutes at {}°{}".format(self.props.get("Timer",0),self.props.get("Temp",0),self.cbpi.config.get("TEMP_UNIT", "C")), NotificationType.INFO)
 
         if self.cbpi.kettle is not None:
             self.kettle.target_temp = int(self.props.get("Temp", 0))
+            await self.setAutoMode(True)
             await self.push_update()
             self.timer = Timer(int(self.props.get("Timer",0)) *60 ,on_update=self.on_timer_update, on_done=self.on_timer_done)
 
@@ -58,12 +59,16 @@ class IodineStep(CBPiStep):
 
     async def on_timer_done(self,timer):
         self.summary = "Iodine check successfull?"
-        # self.kettle.target_temp = 0
-        self.cbpi.notify(self.name, "Iodine check successfull?", NotificationType.INFO, action=[NotificationAction("Yes", self.NextStep), NotificationAction("No", self.start_timer)])
+        if self.kettle is not None:
+            await self.setAutoMode(False)
+            self.kettle.target_temp = 0
+        if self.remaining_seconds < 2:
+            self.cbpi.notify(self.name, "Iodine check successfull?", NotificationType.INFO, action=[NotificationAction("Yes", self.NextStep), NotificationAction("No", self.start_timer)])
         await self.push_update()
 
     async def on_timer_update(self,timer, seconds):
         self.summary = Timer.format_time(seconds)
+        self.remaining_seconds = seconds
         await self.push_update()
 
     async def on_start(self):
@@ -71,17 +76,20 @@ class IodineStep(CBPiStep):
         self.kettle=self.get_kettle(self.props.Kettle)
         if self.kettle is not None:
             self.kettle.target_temp = int(self.props.get("Temp", 0))
+            await self.setAutoMode(True)
         self.init = True
         if self.timer is None:
             self.timer = Timer(1 ,on_update=self.on_timer_update, on_done=self.on_timer_done)
-            
-        if self.cbpi.kettle is not None:
-            self.kettle.target_temp = int(self.props.get("Temp", 0))
+        else:
+            self.timer.start()
+            self.timer.is_running = True
         await self.push_update()
 
     async def on_stop(self):
         await self.timer.stop()
         self.summary = ""
+        if self.kettle is not None:
+            await self.setAutoMode(False)
         self.init = True
         await self.push_update()
         
@@ -106,6 +114,18 @@ class IodineStep(CBPiStep):
                     self.timer.start()
                     self.timer.is_running = True
         return StepResult.DONE
+
+    async def setAutoMode(self, auto_state):
+        try:
+            if (self.kettle.instance is None or self.kettle.instance.state == False) and (auto_state is True):
+                await self.cbpi.kettle.toggle(self.kettle.id)
+            elif (self.kettle.instance.state == True) and (auto_state is False):
+                await self.cbpi.kettle.stop(self.kettle.id)
+            await self.push_update()
+
+        except Exception as e:
+            logging.error("Failed to switch on KettleLogic {} {}".format(self.kettle.id, e))
+
 
 def setup(cbpi):
     cbpi.plugin.register("IodineStep", IodineStep)
